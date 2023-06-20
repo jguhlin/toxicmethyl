@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "toxicmethyl"
+name = "mothra"
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -12,7 +12,7 @@ clap = "4.1.11"
 rust-htslib = "0.41.1"
 mimalloc = {version = "0.1.34", default-features = false }
 pyo3 = { version = "0.18.1" }
-polars = "0.27.2"
+polars = "0.28.0"
 pyo3-polars = "0.2.0"
 
 [features]

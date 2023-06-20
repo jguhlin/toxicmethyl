@@ -1,16 +1,24 @@
 use mimalloc::MiMalloc;
-use rust_htslib::{bam, bam::Read, bam::record::Aux};
 use polars::{df, prelude::*};
 use pyo3::prelude::*;
 use pyo3_polars::{error::PyPolarsErr, PyDataFrame};
+use rust_htslib::{bam, bam::record::Aux, bam::Read};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-fn main() {
-    let bam_file = "/Volumes/archive/scratch/deardenlab/Jgilligan/Polistes_chi_meth/pass/bam_runid_b50030fdcc8d8f5caae75d8e3f6fd5fd011d9223_9_0.bam";
+#[pyfunction]
+pub fn parse_bam(bam_file: &str, min_score: u8) -> PyResult<PyDataFrame> {
+    // let bam_file = "/Volumes/archive/scratch/deardenlab/Jgilligan/Polistes_chi_meth/pass/bam_runid_b50030fdcc8d8f5caae75d8e3f6fd5fd011d9223_9_0.bam";
     let mut bam = bam::Reader::from_path(bam_file).unwrap();
     let header = bam::Header::from_template(bam.header());
+
+    let mut seq_ids: Vec<String> = Vec::new();
+    let mut seq_lens: Vec<u32> = Vec::new();
+    let mut seq_mod_bases: Vec<u32> = Vec::new();
+    let mut seq_possible_mod_bases: Vec<u32> = Vec::new();
+    // let mut seq_mod_base_probs: Vec<Vec<u8>> = Vec::new();
+    let mut seq_mod_base_probs: Vec<String> = Vec::new();
 
     // Print out mod bases and probabilities using ML and MM tags
     for r in bam.records() {
@@ -62,7 +70,10 @@ fn main() {
         let ml_record: Vec<u8> = ml_record.iter().map(|x| x).collect();
 
         // MM Tag is offset of modified base
-        let mm_record: Vec<u16> = mm_record.iter().map(|x| x.parse::<u16>().unwrap()).collect();
+        let mm_record: Vec<u16> = mm_record
+            .iter()
+            .map(|x| x.parse::<u16>().unwrap())
+            .collect();
 
         // MM tag tells us how many to skip
         // This is then followed by a comma separated list of how many seq bases of the stated base type to
@@ -75,14 +86,16 @@ fn main() {
         let mut total_modified_bases = 0;
         let mut total_possible_modified_bases = 0;
         let mut triplets: Vec<(u8, u8, u8)> = Vec::new();
+        let mut modified_triplets: Vec<(u8, u8, u8)> = Vec::new(); // TODO
         let mut triplet_watch = None;
+        let mut modified_triplet = false; // TODO
         let mut triplet: (u8, u8, u8) = (0, 0, 0);
+        let mut probs: Vec<u8> = Vec::new();
 
-        println!("Modified base we are searching for: {}", modified_base);
-        println!("Length: {}", seq.len());
-        
-        for (pos,x) in seq.as_bytes().iter().enumerate() {
+        // println!("Modified base we are searching for: {}", modified_base);
+        // println!("Length: {}", seq.len());
 
+        for (pos, x) in seq.as_bytes().iter().enumerate() {
             if triplet_watch == Some(1) {
                 triplet.1 = *x;
                 triplet_watch = Some(triplet_watch.unwrap() + 1);
@@ -102,29 +115,48 @@ fn main() {
                 }
 
                 if mm_intermediate_count == mm_record[mm_pos] {
-                    // println!("{} {} {}", *x as char, pos, ml_record[mm_pos]);
-                    mm_pos += 1;
+                    if ml_record[mm_pos] >= min_score {
+                        total_modified_bases += 1;
+                        triplet_watch = Some(1);
+                        triplet.0 = *x;
+                    }
                     mm_intermediate_count = 0;
-                    total_modified_bases += 1;
-                    triplet_watch = Some(1);
-                    triplet.0 = *x;
+                    probs.push(ml_record[mm_pos]);
+                    mm_pos += 1;
                 } else {
                     mm_intermediate_count += 1;
                 }
             }
         }
 
+        seq_ids.push(std::str::from_utf8(record.qname()).unwrap().to_string());
+        seq_lens.push(seq.len() as u32);
+        seq_mod_bases.push(total_modified_bases);
+        seq_possible_mod_bases.push(total_possible_modified_bases);
+
+        // String... for now...
+        seq_mod_base_probs.push(
+            probs
+                .iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<String>>()
+                .join(","),
+        );
+
         // Print up Seq ID and total number of modified bases, and total number of possible modified bases
-        println!("Seq ID: {}", std::str::from_utf8(record.qname()).unwrap());
-        println!("Total number of modified bases: {}", total_modified_bases);
-        println!("Total number of possible modified bases: {}", total_possible_modified_bases);
+        // println!("Seq ID: {}", std::str::from_utf8(record.qname()).unwrap());
+        // println!("Total number of modified bases: {}", total_modified_bases);
+        // println!("Total number of possible modified bases: {}", total_possible_modified_bases);
 
         // Count all triples and print up abundances
         let mut triple_counts: Vec<(u8, u8, u8, u32)> = Vec::new();
         for triplet in triplets {
             let mut found = false;
             for (i, triple_count) in triple_counts.iter_mut().enumerate() {
-                if triple_count.0 == triplet.0 && triple_count.1 == triplet.1 && triple_count.2 == triplet.2 {
+                if triple_count.0 == triplet.0
+                    && triple_count.1 == triplet.1
+                    && triple_count.2 == triplet.2
+                {
                     triple_count.3 += 1;
                     found = true;
                     break;
@@ -137,12 +169,9 @@ fn main() {
         }
 
         // Print up triple counts
-        for triple_count in triple_counts {
-            println!("{} {} {} {}", triple_count.0 as char, triple_count.1 as char, triple_count.2 as char, triple_count.3);
-        }
-
-
-        
+        // for triple_count in triple_counts {
+        // println!("{} {} {} {}", triple_count.0 as char, triple_count.1 as char, triple_count.2 as char, triple_count.3);
+        // }
 
         /*
         Ok(
@@ -156,4 +185,25 @@ fn main() {
         // println!("{:#?}", record);
     }
 
+    let seq_ids = Series::new("seq_ids", seq_ids);
+    let seq_lens = Series::new("seq_lens", seq_lens);
+    let seq_mod_bases = Series::new("seq_mod_bases", seq_mod_bases);
+    let seq_possible_mod_bases = Series::new("seq_possible_mod_bases", seq_possible_mod_bases);
+    let seq_mod_base_probs = Series::new("seq_mod_base_probs", seq_mod_base_probs);
+
+    Ok(PyDataFrame(DataFrame::new(vec![
+        seq_ids,
+        seq_lens,
+        seq_mod_bases,
+        seq_possible_mod_bases,
+        seq_mod_base_probs,
+    ]).unwrap()))
+    
+}
+
+/// This is implemented in rust
+#[pymodule]
+fn mothra(py: Python<'_>, m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(parse_bam, m)?)?;
+    Ok(())
 }
